@@ -4,6 +4,7 @@ import System.Exit (exitFailure)
 import ParCPP
 import ErrM
 import TypeChecker
+import PrintCPP
 
 -- driver
 
@@ -16,7 +17,9 @@ check s = case pProgram (myLexer s) of
                           Left err -> do putStrLn "TYPE ERROR"
                                          putStrLn err
                                          exitFailure 
-                          Right _    -> putStrLn "OK"
+                          Right x  -> do
+                            putStrLn "OK"
+                            putStrLn $ printTree x
 
 main :: IO ()
 main = do args <- getArgs
