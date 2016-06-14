@@ -3,9 +3,7 @@ import System.Exit (exitFailure)
 
 import ParCPP
 import ErrM
-
 import TypeChecker
-
 
 -- driver
 
