@@ -3,13 +3,14 @@
 
 module Codegen where
 
+import Data.Word
 import Data.String
 import Data.List
 import Data.Function
 import qualified Data.Map as Map
 
 import Control.Monad.State
-
+import Control.Applicative
 import LLVM.General.AST
 
 import qualified LLVM.General.AST.Type as T
@@ -20,6 +21,7 @@ import qualified LLVM.General.AST.Constant as C
 import qualified LLVM.General.AST.Attribute as A
 import qualified LLVM.General.AST.CallingConvention as CC
 import qualified LLVM.General.AST.FloatingPointPredicate as FP
+import qualified LLVM.General.AST.IntegerPredicate as IP
 
 -------------------------------------------------------------------------------
 -- Module Level
@@ -90,6 +92,7 @@ data CodegenState
   , blockCount   :: Int                      -- Count of basic blocks
   , count        :: Word                     -- Count of unnamed instructions
   , names        :: Names                    -- Name Supply
+  , contexts     :: [Map.Map String String]        -- Map from "normal" name to unique name
   } deriving Show
 
 data BlockState
@@ -98,6 +101,19 @@ data BlockState
   , stack :: [Named Instruction]            -- Stack of instructions
   , term  :: Maybe (Named Terminator)       -- Block terminator
   } deriving Show
+
+enterScope :: Codegen ()
+enterScope = modify (\s -> s { contexts = Map.empty:contexts s })
+
+exitScope :: Codegen ()
+exitScope = modify (\s -> s { contexts = tail (contexts s) })
+
+inScope :: Codegen a -> Codegen a
+inScope x = do
+    enterScope
+    r <- x
+    exitScope
+    return r
 
 -------------------------------------------------------------------------------
 -- Codegen Operations
@@ -125,7 +141,7 @@ emptyBlock :: Int -> BlockState
 emptyBlock i = BlockState i [] Nothing
 
 emptyCodegen :: CodegenState
-emptyCodegen = CodegenState (Name entryBlockName) Map.empty [] 1 0 Map.empty
+emptyCodegen = CodegenState (Name entryBlockName) Map.empty [] 1 0 Map.empty []
 
 execCodegen :: Codegen a -> CodegenState
 execCodegen m = execState (runCodegen m) emptyCodegen
@@ -136,14 +152,14 @@ fresh = do
   modify $ \s -> s { count = 1 + i }
   return $ i + 1
 
-instr :: Instruction -> Codegen Operand
-instr ins = do
+instr :: Type -> Instruction -> Codegen Operand
+instr t ins = do
   n <- fresh
   let ref = UnName n
   blk <- current
   let i = stack blk
   modifyBlock (blk { stack = i ++ [ref := ins] } )
-  return $ local ref
+  return $ local t ref
 
 terminator :: Named Terminator -> Codegen (Named Terminator)
 terminator trm = do
@@ -196,31 +212,45 @@ current = do
 -- Symbol Table
 -------------------------------------------------------------------------------
 
-assign :: String -> Operand -> Codegen ()
+assign :: String -> Operand -> Codegen String
 assign var x = do
+  names <- gets names
+  uname <- uniqueName var names
   lcls <- gets symtab
-  modify $ \s -> s { symtab = (var, x) : lcls }
+  (c:cs) <- gets contexts
+  modify $ \s -> s { symtab = (uname, x) : lcls, 
+                     contexts = Map.insert var uname c:cs
+                   }
+  return uname
 
 getvar :: String -> Codegen Operand
 getvar var = do
   syms <- gets symtab
-  case lookup var syms of
+  firstMatch <- getUName var
+  case Map.lookup firstMatch syms of
     Just x  -> return x
     Nothing -> error $ "Local variable not in scope: " ++ show var
 
+getUName var = do
+  cs <- gets contexts
+  let firstMatch =  foldl (<|>) Nothing (map (Map.lookup var) cs)
+  return firstMatch
 -------------------------------------------------------------------------------
 
 -- References
-local ::  Name -> Operand
-local = LocalReference double
+local ::  Type -> Name -> Operand
+local t = LocalReference t
 
-global ::  Name -> C.Constant
-global = C.GlobalReference double
+global :: Type -> Name -> C.Constant
+global t = C.GlobalReference t
 
 externf :: Name -> Operand
-externf = ConstantOperand . C.GlobalReference double
+externf t = ConstantOperand . C.GlobalReference t
 
 -- Arithmetic and Constants
+icmp :: Operand -> Operand -> Codegen Operand
+icmp cond a b = instr $ ICmp cond a b []
+
 fadd :: Operand -> Operand -> Codegen Operand
 fadd a b = instr $ FAdd NoFastMathFlags a b []
 
@@ -267,3 +297,6 @@ cbr cond tr fl = terminator $ Do $ CondBr cond tr fl []
 
 ret :: Operand -> Codegen (Named Terminator)
 ret val = terminator $ Do $ Ret (Just val) []
+
+retVoid :: Operand -> Codegen (Named Terminator)
+retVoid = terminator $ Do $ Ret Nothing []

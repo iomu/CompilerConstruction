@@ -38,7 +38,7 @@ check s = case pProgram (myLexer s) of
 main :: IO ()
 main = do args <- getArgs
           case args of
-            [file] -> readFile file >>= check
+            [file] -> readFile file >>= check >> return ()
             _      -> do putStrLn "Usage: tccpp <SourceFile>"
                          exitFailure
 

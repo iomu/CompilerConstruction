@@ -42,18 +42,16 @@ lookupFun name = do
 updateVar :: Id -> Type -> StateError ()
 updateVar var t = do
     (c:cs) <- gets contexts
-    if Map.member var c then
-        throwError $ "Duplicate variable declaration detected: " ++ show var
-    else 
-        modify (\s -> s { contexts = Map.insert var t c:cs } )
+    if Map.member var c 
+     then throwError ("Duplicate variable declaration detected: " ++ show var)
+     else modify (\s -> s { contexts = Map.insert var t c:cs } )
 
 updateFun :: Id -> FunType -> StateError ()
 updateFun name t = do
     sig <- gets signatures
-    if Map.member name sig then
-        throwError $ "Duplicate function declaration detected: " ++ show name
-    else 
-        modify (\s -> s { signatures = Map.insert name t sig } )
+    if Map.member name sig 
+     then throwError ( "Duplicate function declaration detected: " ++ show name)
+     else modify (\s -> s { signatures = Map.insert name t sig } )
 
 enterScope :: StateError ()
 enterScope = modify (\s -> s { contexts = Map.empty:contexts s })
@@ -193,7 +191,7 @@ inferBin types exp1 exp2 = do
         do
             exp2' <- checkExp typ exp2
             return (e, exp2', typ)
-    else
+     else
         throwError $ "wrong type of expression " ++ printTree exp1
 
 checkExp :: Type -> Exp -> StateError Exp
@@ -201,7 +199,7 @@ checkExp typ ex = do
     l@(ETyped ex' typ2) <- inferExp ex
     if typ2 == typ then
         return l
-    else 
+     else 
         throwError $ "Wrong type of \"" ++ printTree ex ++ "\", expected " ++ printTree typ ++ " but found " ++ printTree typ2
 
 checkStm :: Stm -> StateError Stm
