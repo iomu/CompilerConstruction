@@ -112,10 +112,18 @@ inferExp x = case x of
                 ++ show i ++ "\": expected " ++ show (length args) ++ ", found " ++ show (length es)
         es' <- zipWithM checkExp args es
         return $ ETyped (EApp i es') typ
-    EPIncr e            -> inferNumUn e
-    EPDecr e            -> inferNumUn e
-    EIncr e             -> inferNumUn e
-    EDecr e             -> inferNumUn e
+    EPIncr e            -> do
+        e'@(ETyped _ t) <- inferNumUn e
+        return $ ETyped (EPIncr e') t
+    EPDecr e            -> do
+        e'@(ETyped _ t) <- inferNumUn e
+        return $ ETyped (EPDecr e') t
+    EIncr e             -> do
+        e'@(ETyped _ t) <- inferNumUn e
+        return $ ETyped (EIncr e') t
+    EDecr e             -> do
+        e'@(ETyped _ t) <- inferNumUn e
+        return $ ETyped (EDecr e') t
     ETimes e1 e2        -> do
         (e1', e2', t) <- inferBin [Type_int, Type_double] e1 e2
         return $ ETyped (ETimes e1' e2') t
@@ -155,7 +163,7 @@ inferExp x = case x of
     EAss e@(EId i) e2    -> do  -- do WE need to check whether the first expression is a variable?
         typ <- lookupVar i
         e2' <- checkExp typ e2
-        return $ ETyped (EAss e e2') typ
+        return $ ETyped (EAss (ETyped e typ) e2') typ
     EAss e _            -> throwError $ "Left hand side of assignment must be a variable, found " ++ printTree e
     ETyped ex t          -> return $ ETyped ex t
 
@@ -205,8 +213,8 @@ checkExp typ ex = do
 checkStm :: Stm -> StateError Stm
 checkStm x = case x of
     SExp ex -> do
-        ETyped ex' t <- inferExp ex
-        return $ SExp ex'
+        l@(ETyped ex' t) <- inferExp ex
+        return $ SExp l
     ds@(SDecls typ names) -> do
         mapM_ (\n -> updateVar n typ) names
         return ds

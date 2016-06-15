@@ -11,6 +11,7 @@ import qualified LLVM.General.AST.Float as F
 import qualified LLVM.General.AST.FloatingPointPredicate as FP
 import qualified LLVM.General.AST.IntegerPredicate as IP
 
+import Data.Maybe
 import Data.Word
 import Data.Int
 import Control.Monad.Except
@@ -20,26 +21,26 @@ import qualified Data.Map as Map
 import Codegen
 import qualified AbsCPP as S
 
-one = const $ C.Int 32 1
+one = cons $ C.Int 32 1
 false = cons $ C.Int 1 0
 true = cons $ C.Int 1 1
 
-toSig :: [String] -> [(AST.Type, AST.Name)]
-toSig = map (\x -> (double, AST.Name x))
+toSig :: [S.Arg] -> [(AST.Type, AST.Name)]
+toSig = map (\(S.ADecl t (S.Id x)) -> (fromJust (Map.lookup t types), AST.Name x))
 
 codegenTop :: S.Def -> LLVM ()
-codegenTop (S.DFun ty name args body) = do
-  t <- lookupInMap ty type
+codegenTop (S.DFun ty (S.Id name) args body) = do
+  t <- lookupInMap ty types
   define t name fnargs bls
   where
     fnargs = toSig args
     bls = createBlocks $ execCodegen $ do
       entry <- addBlock entryBlockName
       setBlock entry
-      forM args $ \S.ADecl ty i -> do
-        t <- lookupInMap ty type
+      forM args $ \(S.ADecl ty (S.Id i)) -> do
+        t <- lookupInMap ty types
         var <- alloca t
-        store var (local t (AST.Name i))
+        store var (local t (AST.Name i)) t
         assign i var
       inScope $ cgenStms body
 
@@ -51,19 +52,13 @@ types = Map.fromList [
       (S.Type_string, undefined)
   ]
 
-lookupInMap typ values = do
-  case Map.lookup typ values of
-    Just x -> return x
-    Nothing -> fail "Type not found"
+lookupInMap typ values =  case Map.lookup typ values of
+  Just x -> return x
+  Nothing -> fail "Type not found"
 
 -------------------------------------------------------------------------------
 -- Operations
 -------------------------------------------------------------------------------
-
-lt :: AST.Operand -> AST.Operand -> Codegen AST.Operand
-lt a b = do
-  test <- fcmp FP.ULT a b
-  uitofp double test
 
 addOps = Map.fromList [
       (S.Type_int, iadd),
@@ -76,83 +71,63 @@ subOps = Map.fromList [
   ]
 
 cgenEx :: S.Exp -> Codegen AST.Operand
-cgenEx (ETyped ex t) = case ex of
-  ETrue           -> return true
-  EFalse          -> return false
-  EInt y          -> return $ cons $ Int 32 y
-  EDouble y       -> return $ cons $ C.Float (F.Double y)
-  EString y       -> undefined
-  EId i           -> getvar i >>= load
-  EApp fn args    -> do
+cgenEx (S.ETyped ex t) = case ex of
+  S.ETrue           -> return true
+  S.EFalse          -> return false
+  S.EInt y          -> return $ cons $ C.Int 32 y
+  S.EDouble y       -> return $ cons $ C.Float (F.Double y)
+  S.EString y       -> undefined
+  S.EId (S.Id i)    -> do    
+    t' <- lookupInMap t types
+    x <- getvar i 
+    load x t'
+  S.EApp (S.Id fn) args    -> do
+    t' <- lookupInMap t types
     largs <- mapM cgenEx args
-    call (externf t (AST.Name fn)) largs
-  EPIncr e@(ETyped (EId var) _) -> do
-    op <- lookupInMap ty addOps
-    o <- cgenEx e
-    new <- op o one
+    call (externf t' (AST.Name fn)) largs t'
+  S.EPIncr e@(S.ETyped (S.EId (S.Id var)) _) -> do
+    t' <- lookupInMap t types    
+    op <- lookupInMap t addOps
     var' <- getvar var
-    store var' new
-    return o
-  EIncr e@(ETyped (EId var) _) -> do
-    op <- lookupInMap ty addOps
     o <- cgenEx e
-    new <- op o one
-    var' <- getvar var
-    store var' new
-    return new   
-  EPDecr e@(ETyped (EId var) _) -> do
-    op <- lookupInMap ty subOps
-    o <- cgenEx e
-    new <- op o one
-    var' <- getvar var
-    store var' new
-    return o
-  EDecr e@(ETyped (EId var) _) -> do
-    op <- lookupInMap ty subOps
-    o <- cgenEx e
-    new <- op o one
-    var' <- getvar var
-    store var' new
-    return new  
-cgen (S.UnaryOp op a) = do
-  cgen $ S.Call ("unary" ++ op) [a]
-cgen (S.BinaryOp "=" (S.Var var) val) = do
-  a <- getvar var
-  cval <- cgen val
-  store a cval
-  return cval
-cgen (S.BinaryOp op a b) = do
-  case Map.lookup op binops of
-    Just f  -> do
-      ca <- cgen a
-      cb <- cgen b
-      f ca cb
-    Nothing -> fail "No such operator"
-cgen (S.Var x) = getvar x >>= load
-cgen (S.Float n) = return $ cons $ C.Float (F.Double n)
-cgen (S.Call fn args) = do
-  largs <- mapM cgen args
-  call (externf (AST.Name fn)) largs
+    new <- op o one    
+    store var' new t'    
+    return o 
+  S.EAss e1 val -> do
+    let (S.ETyped (S.EId (S.Id var)) _) = e1
+    t' <- lookupInMap t types
+    a <- getvar var 
+    cval <- cgenEx val
+    store a cval t'
+    return cval
+cgenEx x = error ":("
+
+
+cgenBinary fn a b = do
+  ca <- cgenEx a
+  cb <- cgenEx b
+  fn ca cb
 
 cgenStm :: S.Stm -> Codegen ()
 cgenStm s = case s of
-  SExp ex -> void $ cgen ex
-  SDecls typ names -> do
-    t <- lookupType typ
-    forM_ names $ \n -> do
+  S.SExp ex -> void $ cgenEx ex
+  S.SDecls typ names -> do
+    t <- lookupInMap typ types
+    forM_ names $ \(S.Id n) -> do
       var <- alloca t      
       assign n var
-  SInit typ i ex -> do
-    t <- lookupType typ
+  S.SInit typ (S.Id i) ex -> do
+    t <- lookupInMap typ types
     o <- cgenEx ex
     var <- alloca t
     un <- assign i var
-    store un o    
-  SReturn ex -> do
-    o <- cgen ex
+    void $ store var o t   
+  S.SReturn ex -> do
+    o <- cgenEx ex
     ret o
-  SReturnVoid -> retVoid
-  SWhile ex stm -> do
+    return ()
+  S.SReturnVoid -> void retVoid
+  S.SWhile ex stm -> do
     cond <- addBlock "while.cond"
     body <- addBlock "while.body"
     exit <- addBlock "while.exit"
@@ -165,8 +140,9 @@ cgenStm s = case s of
     cgenStm stm
     br cond
     setBlock exit
-  SBlock stms -> inScope $ cgenStms stms
-  SIfElse cond tr fl -> do
+    return ()
+  S.SBlock stms -> inScope $ cgenStms stms
+  S.SIfElse cond tr fl -> do
     ifBlock <- addBlock "if.true"
     elseBlock <- addBlock "if.false"
     exit <- addBlock "if.exit"  
@@ -180,10 +156,13 @@ cgenStm s = case s of
     cgenStm fl
     br exit
     setBlock exit
+    return ()
 
 
-cgenStms = forM_ cgenStm
+cgenStms = mapM_ cgenStm
 
+expType :: S.Exp -> S.Type
+expType (S.ETyped _ t) = t
 -------------------------------------------------------------------------------
 -- Compilation
 -------------------------------------------------------------------------------

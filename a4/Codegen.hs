@@ -214,8 +214,9 @@ current = do
 
 assign :: String -> Operand -> Codegen String
 assign var x = do
-  names <- gets names
-  uname <- uniqueName var names
+  sup <- gets names
+  let (uname, supply) = uniqueName var sup
+  modify $ \s -> s { names = supply }
   lcls <- gets symtab
   (c:cs) <- gets contexts
   modify $ \s -> s { symtab = (uname, x) : lcls, 
@@ -227,66 +228,79 @@ getvar :: String -> Codegen Operand
 getvar var = do
   syms <- gets symtab
   firstMatch <- getUName var
-  case Map.lookup firstMatch syms of
+  case lookup firstMatch syms of
     Just x  -> return x
     Nothing -> error $ "Local variable not in scope: " ++ show var
 
+getUName :: String -> Codegen String
 getUName var = do
   cs <- gets contexts
   let firstMatch =  foldl (<|>) Nothing (map (Map.lookup var) cs)
-  return firstMatch
+  case firstMatch of
+    Just x -> return x
+    Nothing -> fail "Variable not found"
+  
 -------------------------------------------------------------------------------
 
 -- References
 local ::  Type -> Name -> Operand
-local t = LocalReference t
+local = LocalReference 
 
 global :: Type -> Name -> C.Constant
-global t = C.GlobalReference t
+global = C.GlobalReference 
 
-externf :: Name -> Operand
+externf :: Type -> Name -> Operand
 externf t = ConstantOperand . C.GlobalReference t
 
 -- Arithmetic and Constants
-icmp :: Operand -> Operand -> Codegen Operand
-icmp cond a b = instr $ ICmp cond a b []
+icmp :: IP.IntegerPredicate -> Operand -> Operand -> Codegen Operand
+icmp cond a b = instr int $ ICmp cond a b []
+
+iadd :: Operand -> Operand -> Codegen Operand
+iadd a b = instr int $ Add False False a b []
+
+isub :: Operand -> Operand -> Codegen Operand
+isub a b = instr int $ Sub False False a b []
+
+imul :: Operand -> Operand -> Codegen Operand
+imul a b = instr int $ Mul False False a b []
+
+idiv :: Operand -> Operand -> Codegen Operand
+idiv a b = instr int $ SDiv False a b []
 
 fadd :: Operand -> Operand -> Codegen Operand
-fadd a b = instr $ FAdd NoFastMathFlags a b []
+fadd a b = instr double $ FAdd NoFastMathFlags a b []
 
 fsub :: Operand -> Operand -> Codegen Operand
-fsub a b = instr $ FSub NoFastMathFlags a b []
+fsub a b = instr double $ FSub NoFastMathFlags a b []
 
 fmul :: Operand -> Operand -> Codegen Operand
-fmul a b = instr $ FMul NoFastMathFlags a b []
+fmul a b = instr double $ FMul NoFastMathFlags a b []
 
 fdiv :: Operand -> Operand -> Codegen Operand
-fdiv a b = instr $ FDiv NoFastMathFlags a b []
+fdiv a b = instr double $ FDiv NoFastMathFlags a b []
 
 fcmp :: FP.FloatingPointPredicate -> Operand -> Operand -> Codegen Operand
-fcmp cond a b = instr $ FCmp cond a b []
+fcmp cond a b = instr bool $ FCmp cond a b []
 
 cons :: C.Constant -> Operand
 cons = ConstantOperand
-
-uitofp :: Type -> Operand -> Codegen Operand
-uitofp ty a = instr $ UIToFP a ty []
 
 toArgs :: [Operand] -> [(Operand, [A.ParameterAttribute])]
 toArgs = map (\x -> (x, []))
 
 -- Effects
-call :: Operand -> [Operand] -> Codegen Operand
-call fn args = instr $ Call Nothing CC.C [] (Right fn) (toArgs args) [] []
+call :: Operand -> [Operand] -> Type -> Codegen Operand
+call fn args ty = instr ty $ Call Nothing CC.C [] (Right fn) (toArgs args) [] []
 
 alloca :: Type -> Codegen Operand
-alloca ty = instr $ Alloca ty Nothing 0 []
+alloca ty = instr ty $ Alloca ty Nothing 0 []
 
-store :: Operand -> Operand -> Codegen Operand
-store ptr val = instr $ Store False ptr val Nothing 0 []
+store :: Operand -> Operand -> Type -> Codegen Operand
+store ptr val t = instr t $ Store False ptr val Nothing 0 []
 
-load :: Operand -> Codegen Operand
-load ptr = instr $ Load False ptr Nothing 0 []
+load :: Operand -> Type -> Codegen Operand
+load ptr t = instr t $ Load False ptr Nothing 0 []
 
 -- Control Flow
 br :: Name -> Codegen (Named Terminator)
@@ -298,5 +312,5 @@ cbr cond tr fl = terminator $ Do $ CondBr cond tr fl []
 ret :: Operand -> Codegen (Named Terminator)
 ret val = terminator $ Do $ Ret (Just val) []
 
-retVoid :: Operand -> Codegen (Named Terminator)
+retVoid :: Codegen (Named Terminator)
 retVoid = terminator $ Do $ Ret Nothing []
