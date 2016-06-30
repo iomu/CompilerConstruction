@@ -119,9 +119,10 @@ inScope x = do
     exitScope
     return r
 
-initReturnValue op = do
-  modify $ \s -> s { returnValue = Just op }
+initReturnValue :: Operand -> Codegen ()
+initReturnValue op = modify $ \s -> s { returnValue = Just op }
   
+initReturnBlock :: Codegen Name
 initReturnBlock = do
   rb <- addBlock "return"
   modify $ \s -> s { returnBlock = Just rb }

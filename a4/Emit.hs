@@ -51,7 +51,7 @@ codegenTop (S.DFun ty (S.Id name) args body) = do
           r <- alloca t
           initReturnValue r
         rb <- initReturnBlock
-        forM args $ \(S.ADecl ty (S.Id i)) -> do
+        forM_ args $ \(S.ADecl ty (S.Id i)) -> do
           t <- lookupInMap ty types
           var <- alloca t
           store var (local t (AST.Name i)) t
@@ -60,11 +60,11 @@ codegenTop (S.DFun ty (S.Id name) args body) = do
         ht <- hasTerminator        
         unless ht $ void $ br rb        
         setBlock rb
-        if t == T.VoidType then retVoid 
-          else 
-            do
-              r <- getReturnValue 
-              load r t >>= ret     
+        if t == T.VoidType 
+          then retVoid 
+          else do
+            r <- getReturnValue 
+            load r t >>= ret     
 
 
 types = Map.fromList [
@@ -243,8 +243,7 @@ cgenEx (S.ETyped ex t) = case ex of
     cval <- cgenEx val
     store a cval t'
     return cval
-cgenEx x = error ":("
-
+cgenEx x = error ":(" 
 
 cgenBinary fn a b = do
   ca <- cgenEx a
