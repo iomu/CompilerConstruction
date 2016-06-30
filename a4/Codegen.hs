@@ -64,6 +64,8 @@ int = T.i32
 -- Boolean
 bool :: Type
 bool = T.i1
+
+
 -------------------------------------------------------------------------------
 -- Names
 -------------------------------------------------------------------------------
@@ -93,7 +95,8 @@ data CodegenState
   , blockCount   :: Int                      -- Count of basic blocks
   , count        :: Word                     -- Count of unnamed instructions
   , names        :: Names 
-  , returnValue   :: Maybe Operand                   -- Name Supply         
+  , returnValue   :: Maybe Operand                   -- Name Supply 
+  , returnBlock  :: Maybe Name        
   } deriving Show
 
 data BlockState
@@ -118,6 +121,11 @@ inScope x = do
 
 initReturnValue op = do
   modify $ \s -> s { returnValue = Just op }
+  
+initReturnBlock = do
+  rb <- addBlock "return"
+  modify $ \s -> s { returnBlock = Just rb }
+  return rb
 
 getReturnValue :: Codegen Operand
 getReturnValue = do
@@ -125,6 +133,14 @@ getReturnValue = do
   case r of
     Just x -> return x
     Nothing -> fail "No return value initialized"
+
+getReturnBlock :: Codegen Name
+getReturnBlock = do
+  r <- gets returnBlock
+  case r of
+    Just x -> return x
+    Nothing -> fail "No return block initialized"
+
 
 -------------------------------------------------------------------------------
 -- Codegen Operations
@@ -138,6 +154,8 @@ sortBlocks = sortBy (compare `on` (idx . snd))
 
 createBlocks :: CodegenState -> [BasicBlock]
 createBlocks m = map makeBlock $ sortBlocks $ Map.toList (blocks m)
+  where
+    isEmptyBlock (_, BlockState _ s t) = null s && isNothing t
 
 makeBlock :: (Name, BlockState) -> BasicBlock
 makeBlock (l, BlockState _ s t) = BasicBlock l s (maketerm t)
@@ -152,7 +170,7 @@ emptyBlock :: Int -> BlockState
 emptyBlock i = BlockState i [] Nothing
 
 emptyCodegen :: CodegenState
-emptyCodegen = CodegenState (Name entryBlockName) Map.empty [] 1 0 Map.empty Nothing
+emptyCodegen = CodegenState (Name entryBlockName) Map.empty [] 1 0 Map.empty Nothing Nothing
 
 execCodegen :: Codegen a -> CodegenState
 execCodegen m = execState (runCodegen m) emptyCodegen

@@ -10,6 +10,7 @@ import qualified LLVM.General.AST.Constant as C
 import qualified LLVM.General.AST.Float as F
 import qualified LLVM.General.AST.FloatingPointPredicate as FP
 import qualified LLVM.General.AST.IntegerPredicate as IP
+import qualified LLVM.General.AST.Type as T
 
 import Data.Maybe
 import Data.Word
@@ -45,30 +46,32 @@ codegenTop (S.DFun ty (S.Id name) args body) = do
       entry <- addBlock entryBlockName
       setBlock entry
       inScope $ do 
-        --t <- lookupInMap ty types
-        --r <- alloca t
-        --initReturnValue r
+        t <- lookupInMap ty types
+        unless (t == T.VoidType) $ do
+          r <- alloca t
+          initReturnValue r
+        rb <- initReturnBlock
         forM args $ \(S.ADecl ty (S.Id i)) -> do
           t <- lookupInMap ty types
           var <- alloca t
           store var (local t (AST.Name i)) t
           assign i var        
         cgenStms body
-        deleteEmptyBlock
-        -- load r t >>= ret
-
-deleteEmptyBlock = do
-  b <- current
-  bn <- getBlock
-  ht <- hasTerminator
-  when (not ht && null (stack b)) $
-    modify $ \s -> s { blocks = Map.delete bn (blocks s)}
+        ht <- hasTerminator        
+        unless ht $ void $ br rb        
+        setBlock rb
+        if t == T.VoidType then retVoid 
+          else 
+            do
+              r <- getReturnValue 
+              load r t >>= ret     
 
 
 types = Map.fromList [
       (S.Type_double, double),
       (S.Type_int, int),
-      (S.Type_bool, bool)
+      (S.Type_bool, bool),
+      (S.Type_void, T.VoidType)
   ]
 
 lookupInMap typ values =  case Map.lookup typ values of
@@ -264,9 +267,16 @@ cgenStm s = case s of
     void $ store var o t   
   S.SReturn ex -> do
     o <- cgenEx ex
-    ret o
+    t <- lookupInMap (expType ex) types
+    rv <- getReturnValue
+    store rv o t
+    rb <- getReturnBlock
+    br rb
     return ()
-  S.SReturnVoid -> void retVoid
+  S.SReturnVoid -> do
+    rb <- getReturnBlock
+    br rb
+    return ()
   S.SWhile ex stm -> do
     cond <- addBlock "while.cond"
     body <- addBlock "while.body"
