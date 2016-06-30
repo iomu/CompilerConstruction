@@ -1,8 +1,6 @@
 name:                codegen
 version:             0
 
-license:             MIT
-license-file:        LICENSE
 author:              Felix Lublow, Johannes Müller, Peter Zahn
 
 build-type:          Simple

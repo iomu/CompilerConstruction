@@ -36,6 +36,12 @@ constOneForType t = case t of
 toSig :: [S.Arg] -> [(AST.Type, AST.Name)]
 toSig = map (\(S.ADecl t (S.Id x)) -> (fromJust (Map.lookup t types), AST.Name x))
 
+{-
+  Some notes regarding return statements:
+   - at the start of every function we allocate a memory cell of the return type
+   - we also create a "return" basic block, in which we return the allocated memory cell
+   - whenever we encounter a return statement, we store the expression in the memory cell and then jump to the return block
+-}
 codegenTop :: S.Def -> LLVM ()
 codegenTop (S.DFun ty (S.Id name) args body) = do
   t <- lookupInMap ty types
@@ -157,7 +163,7 @@ cgenEx (S.ETyped ex t) = case ex of
     op <- lookupInMap t addOps
     var' <- getvar var
     o <- cgenEx e
-    new <- op o (constOneForType t)    -- TODO correct "one"
+    new <- op o (constOneForType t)   
     store var' new t'    
     return o 
   S.EPDecr e@(S.ETyped (S.EId (S.Id var)) _) -> do
@@ -282,8 +288,7 @@ cgenStm s = case s of
     exit <- addBlock "while.exit"
     br cond
     setBlock cond
-    o <- cgenEx ex
-    -- r <- icmp IP.EQ true o
+    o <- cgenEx ex    
     cbr o body exit
     setBlock body
     cgenStm stm
@@ -296,14 +301,12 @@ cgenStm s = case s of
     ifBlock <- addBlock "if.true"
     elseBlock <- addBlock "if.false"
     exit <- addBlock "if.exit"  
-    o <- cgenEx cond
-    --r <- icmp IP.EQ true o
+    o <- cgenEx cond    
     cbr o ifBlock elseBlock
     setBlock ifBlock
     cgenStm tr
     ht <- hasTerminator
-    unless ht $ void $ br exit
-    --br exit
+    unless ht $ void $ br exit  
     setBlock elseBlock
     cgenStm fl
     ht <- hasTerminator
@@ -316,6 +319,7 @@ cgenStms = mapM_ cgenStm
 
 expType :: S.Exp -> S.Type
 expType (S.ETyped _ t) = t
+
 -------------------------------------------------------------------------------
 -- Compilation
 -------------------------------------------------------------------------------
