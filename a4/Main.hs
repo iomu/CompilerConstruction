@@ -32,7 +32,7 @@ check s = case pProgram (myLexer s) of
                                          putStrLn err
                                          exitFailure 
                           Right x    -> do
-                            putStrLn $ printTree x
+                            --putStrLn $ printTree x
                             ast <- codegen initModule x
                             return $ Just ast
 

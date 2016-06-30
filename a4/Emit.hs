@@ -14,6 +14,7 @@ import qualified LLVM.General.AST.IntegerPredicate as IP
 import Data.Maybe
 import Data.Word
 import Data.Int
+import Control.Monad.State
 import Control.Monad.Except
 import Control.Applicative
 import qualified Data.Map as Map
@@ -22,8 +23,14 @@ import Codegen
 import qualified AbsCPP as S
 
 one = cons $ C.Int 32 1
+oneF = cons $ C.Float (F.Double 1.0)
+
 false = cons $ C.Int 1 0
 true = cons $ C.Int 1 1
+
+constOneForType t = case t of
+  S.Type_int -> one
+  S.Type_double -> oneF
 
 toSig :: [S.Arg] -> [(AST.Type, AST.Name)]
 toSig = map (\(S.ADecl t (S.Id x)) -> (fromJust (Map.lookup t types), AST.Name x))
@@ -37,19 +44,31 @@ codegenTop (S.DFun ty (S.Id name) args body) = do
     bls = createBlocks $ execCodegen $ do
       entry <- addBlock entryBlockName
       setBlock entry
-      forM args $ \(S.ADecl ty (S.Id i)) -> do
-        t <- lookupInMap ty types
-        var <- alloca t
-        store var (local t (AST.Name i)) t
-        assign i var
-      inScope $ cgenStms body
+      inScope $ do 
+        --t <- lookupInMap ty types
+        --r <- alloca t
+        --initReturnValue r
+        forM args $ \(S.ADecl ty (S.Id i)) -> do
+          t <- lookupInMap ty types
+          var <- alloca t
+          store var (local t (AST.Name i)) t
+          assign i var        
+        cgenStms body
+        deleteEmptyBlock
+        -- load r t >>= ret
+
+deleteEmptyBlock = do
+  b <- current
+  bn <- getBlock
+  ht <- hasTerminator
+  when (not ht && null (stack b)) $
+    modify $ \s -> s { blocks = Map.delete bn (blocks s)}
 
 
 types = Map.fromList [
       (S.Type_double, double),
       (S.Type_int, int),
-      (S.Type_bool, bool),
-      (S.Type_string, undefined)
+      (S.Type_bool, bool)
   ]
 
 lookupInMap typ values =  case Map.lookup typ values of
@@ -70,13 +89,58 @@ subOps = Map.fromList [
       (S.Type_double, fsub)
   ]
 
+multOps = Map.fromList [
+      (S.Type_int, imul),
+      (S.Type_double, fmul)
+  ]
+
+divOps = Map.fromList [
+      (S.Type_int, idiv),
+      (S.Type_double, fdiv)
+  ]
+
+ltOps = Map.fromList [
+      (S.Type_int, icmp IP.SLT),
+      (S.Type_bool, bcmp IP.SLT),
+      (S.Type_double, fcmp FP.ULT)
+  ]
+
+gtOps = Map.fromList [
+      (S.Type_int, icmp IP.SGT),
+      (S.Type_bool, bcmp IP.SGT),
+      (S.Type_double, fcmp FP.UGT)
+  ]
+
+lteOps = Map.fromList [
+      (S.Type_int, icmp IP.SLE),
+      (S.Type_bool, bcmp IP.SLE),
+      (S.Type_double, fcmp FP.ULE)
+  ]
+
+gteOps = Map.fromList [
+      (S.Type_int, icmp IP.SGE),
+      (S.Type_bool, bcmp IP.SGE),
+      (S.Type_double, fcmp FP.UGE)
+  ]
+
+eqOps = Map.fromList [
+      (S.Type_int, icmp IP.EQ),
+      (S.Type_bool, bcmp IP.EQ),
+      (S.Type_double, fcmp FP.UEQ)
+  ]
+
+neqOps = Map.fromList [
+      (S.Type_int, icmp IP.NE),
+      (S.Type_bool, bcmp IP.NE),
+      (S.Type_double, fcmp FP.UNE)
+  ]
+
 cgenEx :: S.Exp -> Codegen AST.Operand
 cgenEx (S.ETyped ex t) = case ex of
   S.ETrue           -> return true
   S.EFalse          -> return false
   S.EInt y          -> return $ cons $ C.Int 32 y
-  S.EDouble y       -> return $ cons $ C.Float (F.Double y)
-  S.EString y       -> undefined
+  S.EDouble y       -> return $ cons $ C.Float (F.Double y)  
   S.EId (S.Id i)    -> do    
     t' <- lookupInMap t types
     x <- getvar i 
@@ -90,9 +154,85 @@ cgenEx (S.ETyped ex t) = case ex of
     op <- lookupInMap t addOps
     var' <- getvar var
     o <- cgenEx e
-    new <- op o one    
+    new <- op o (constOneForType t)    -- TODO correct "one"
     store var' new t'    
     return o 
+  S.EPDecr e@(S.ETyped (S.EId (S.Id var)) _) -> do
+    t' <- lookupInMap t types    
+    op <- lookupInMap t subOps
+    var' <- getvar var
+    o <- cgenEx e
+    new <- op o (constOneForType t)    
+    store var' new t'    
+    return o 
+  S.EIncr e@(S.ETyped (S.EId (S.Id var)) _) -> do
+    t' <- lookupInMap t types    
+    op <- lookupInMap t addOps
+    var' <- getvar var
+    o <- cgenEx e
+    new <- op o (constOneForType t)    
+    store var' new t'    
+    return new
+  S.EDecr e@(S.ETyped (S.EId (S.Id var)) _) -> do
+    t' <- lookupInMap t types    
+    op <- lookupInMap t subOps
+    var' <- getvar var
+    o <- cgenEx e
+    new <- op o (constOneForType t)    
+    store var' new t'    
+    return new 
+  S.ETimes e1 e2 -> do
+    op <- lookupInMap t multOps
+    cgenBinary op e1 e2
+  S.EDiv e1 e2 -> do
+    op <- lookupInMap t divOps
+    cgenBinary op e1 e2
+  S.EPlus e1 e2 -> do
+    op <- lookupInMap t addOps
+    cgenBinary op e1 e2
+  S.EMinus e1 e2 -> do
+    op <- lookupInMap t subOps
+    cgenBinary op e1 e2  
+  S.ELt e1 e2 -> do
+    op <- lookupInMap (expType e1) ltOps
+    cgenBinary op e1 e2        
+  S.EGt e1 e2 -> do
+    op <- lookupInMap (expType e1) gtOps
+    cgenBinary op e1 e2  
+  S.ELtEq e1 e2 -> do
+    op <- lookupInMap (expType e1) lteOps
+    cgenBinary op e1 e2  
+  S.EGtEq e1 e2 -> do
+    op <- lookupInMap (expType e1) gteOps
+    cgenBinary op e1 e2  
+  S.EEq e1 e2 -> do
+    op <- lookupInMap (expType e1) eqOps
+    cgenBinary op e1 e2  
+  S.ENEq e1 e2 -> do
+    op <- lookupInMap (expType e1) neqOps
+    cgenBinary op e1 e2  
+  S.EAnd e1 e2 -> do
+    current <- getBlock
+    true <- addBlock "and.true"
+    exit <- addBlock "and.exit"    
+    a <- cgenEx e1    
+    cbr a true exit
+    setBlock true
+    b <- cgenEx e2    
+    br exit
+    setBlock exit
+    phi bool [(false, current), (b, true)]
+  S.EOr e1 e2 -> do
+    current <- getBlock
+    false <- addBlock "or.false"
+    exit <- addBlock "or.exit"    
+    a <- cgenEx e1    
+    cbr a exit false
+    setBlock false
+    b <- cgenEx e2    
+    br exit
+    setBlock exit
+    phi bool [(true, current), (b, false)]
   S.EAss e1 val -> do
     let (S.ETyped (S.EId (S.Id var)) _) = e1
     t' <- lookupInMap t types
@@ -120,7 +260,7 @@ cgenStm s = case s of
     t <- lookupInMap typ types
     o <- cgenEx ex
     var <- alloca t
-    un <- assign i var
+    assign i var
     void $ store var o t   
   S.SReturn ex -> do
     o <- cgenEx ex
@@ -134,11 +274,12 @@ cgenStm s = case s of
     br cond
     setBlock cond
     o <- cgenEx ex
-    r <- icmp IP.EQ true o
-    cbr r body exit
+    -- r <- icmp IP.EQ true o
+    cbr o body exit
     setBlock body
     cgenStm stm
-    br cond
+    ht <- hasTerminator
+    unless ht $ void $ br cond
     setBlock exit
     return ()
   S.SBlock stms -> inScope $ cgenStms stms
@@ -147,14 +288,17 @@ cgenStm s = case s of
     elseBlock <- addBlock "if.false"
     exit <- addBlock "if.exit"  
     o <- cgenEx cond
-    r <- icmp IP.EQ true o
-    cbr r ifBlock elseBlock
+    --r <- icmp IP.EQ true o
+    cbr o ifBlock elseBlock
     setBlock ifBlock
     cgenStm tr
-    br exit
+    ht <- hasTerminator
+    unless ht $ void $ br exit
+    --br exit
     setBlock elseBlock
     cgenStm fl
-    br exit
+    ht <- hasTerminator
+    unless ht $ void $ br exit
     setBlock exit
     return ()
 

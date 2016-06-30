@@ -3,6 +3,7 @@
 
 module Codegen where
 
+import Data.Maybe
 import Data.Word
 import Data.String
 import Data.List
@@ -88,11 +89,11 @@ data CodegenState
   = CodegenState {
     currentBlock :: Name                     -- Name of the active block to append to
   , blocks       :: Map.Map Name BlockState  -- Blocks for function
-  , symtab       :: SymbolTable              -- Function scope symbol table
+  , symtabs      :: [SymbolTable]              -- Function scope symbol table
   , blockCount   :: Int                      -- Count of basic blocks
   , count        :: Word                     -- Count of unnamed instructions
-  , names        :: Names                    -- Name Supply
-  , contexts     :: [Map.Map String String]        -- Map from "normal" name to unique name
+  , names        :: Names 
+  , returnValue   :: Maybe Operand                   -- Name Supply         
   } deriving Show
 
 data BlockState
@@ -103,10 +104,10 @@ data BlockState
   } deriving Show
 
 enterScope :: Codegen ()
-enterScope = modify (\s -> s { contexts = Map.empty:contexts s })
+enterScope = modify (\s -> s { symtabs = []:symtabs s })
 
 exitScope :: Codegen ()
-exitScope = modify (\s -> s { contexts = tail (contexts s) })
+exitScope = modify (\s -> s { symtabs = tail (symtabs s) })
 
 inScope :: Codegen a -> Codegen a
 inScope x = do
@@ -114,6 +115,16 @@ inScope x = do
     r <- x
     exitScope
     return r
+
+initReturnValue op = do
+  modify $ \s -> s { returnValue = Just op }
+
+getReturnValue :: Codegen Operand
+getReturnValue = do
+  r <- gets returnValue
+  case r of
+    Just x -> return x
+    Nothing -> fail "No return value initialized"
 
 -------------------------------------------------------------------------------
 -- Codegen Operations
@@ -141,7 +152,7 @@ emptyBlock :: Int -> BlockState
 emptyBlock i = BlockState i [] Nothing
 
 emptyCodegen :: CodegenState
-emptyCodegen = CodegenState (Name entryBlockName) Map.empty [] 1 0 Map.empty []
+emptyCodegen = CodegenState (Name entryBlockName) Map.empty [] 1 0 Map.empty Nothing
 
 execCodegen :: Codegen a -> CodegenState
 execCodegen m = execState (runCodegen m) emptyCodegen
@@ -166,6 +177,11 @@ terminator trm = do
   blk <- current
   modifyBlock (blk { term = Just trm })
   return trm
+
+hasTerminator :: Codegen Bool
+hasTerminator = do
+  b <- current  
+  return $ isJust $ term b
 
 -------------------------------------------------------------------------------
 -- Block Stack
@@ -212,33 +228,20 @@ current = do
 -- Symbol Table
 -------------------------------------------------------------------------------
 
-assign :: String -> Operand -> Codegen String
-assign var x = do
-  sup <- gets names
-  let (uname, supply) = uniqueName var sup
-  modify $ \s -> s { names = supply }
-  lcls <- gets symtab
-  (c:cs) <- gets contexts
-  modify $ \s -> s { symtab = (uname, x) : lcls, 
-                     contexts = Map.insert var uname c:cs
-                   }
-  return uname
+assign :: String -> Operand -> Codegen ()
+assign var x = do 
+  (c:sts) <- gets symtabs  
+  modify $ \s -> s { symtabs = ((var, x):c):sts }
+  
 
 getvar :: String -> Codegen Operand
 getvar var = do
-  syms <- gets symtab
-  firstMatch <- getUName var
-  case lookup firstMatch syms of
+  syms <- gets symtabs
+  let firstMatch =  foldl (<|>) Nothing (map (lookup var) syms)
+  
+  case firstMatch of
     Just x  -> return x
     Nothing -> error $ "Local variable not in scope: " ++ show var
-
-getUName :: String -> Codegen String
-getUName var = do
-  cs <- gets contexts
-  let firstMatch =  foldl (<|>) Nothing (map (Map.lookup var) cs)
-  case firstMatch of
-    Just x -> return x
-    Nothing -> fail "Variable not found"
   
 -------------------------------------------------------------------------------
 
@@ -253,8 +256,10 @@ externf :: Type -> Name -> Operand
 externf t = ConstantOperand . C.GlobalReference t
 
 -- Arithmetic and Constants
+
+-- Int
 icmp :: IP.IntegerPredicate -> Operand -> Operand -> Codegen Operand
-icmp cond a b = instr int $ ICmp cond a b []
+icmp cond a b = instr bool $ ICmp cond a b []
 
 iadd :: Operand -> Operand -> Codegen Operand
 iadd a b = instr int $ Add False False a b []
@@ -268,6 +273,7 @@ imul a b = instr int $ Mul False False a b []
 idiv :: Operand -> Operand -> Codegen Operand
 idiv a b = instr int $ SDiv False a b []
 
+-- Double
 fadd :: Operand -> Operand -> Codegen Operand
 fadd a b = instr double $ FAdd NoFastMathFlags a b []
 
@@ -282,6 +288,10 @@ fdiv a b = instr double $ FDiv NoFastMathFlags a b []
 
 fcmp :: FP.FloatingPointPredicate -> Operand -> Operand -> Codegen Operand
 fcmp cond a b = instr bool $ FCmp cond a b []
+
+-- Bool
+bcmp :: IP.IntegerPredicate -> Operand -> Operand -> Codegen Operand
+bcmp cond a b = instr bool $ ICmp cond a b []
 
 cons :: C.Constant -> Operand
 cons = ConstantOperand
@@ -308,6 +318,9 @@ br val = terminator $ Do $ Br val []
 
 cbr :: Operand -> Name -> Name -> Codegen (Named Terminator)
 cbr cond tr fl = terminator $ Do $ CondBr cond tr fl []
+
+phi :: Type -> [(Operand, Name)] -> Codegen Operand
+phi ty incoming = instr ty $ Phi ty incoming []
 
 ret :: Operand -> Codegen (Named Terminator)
 ret val = terminator $ Do $ Ret (Just val) []
